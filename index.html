@@ -1,0 +1,545 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Animal Detection - ESP32</title>
+
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #131b2e;
+      --line: #293550;
+      --text: #edf2ff;
+      --muted: #9aa8c4;
+      --accent: #72e0b2;
+      --warn: #ffd479;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 28px 16px;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.45 system-ui, sans-serif;
+    }
+
+    main {
+      max-width: 1000px;
+      margin: auto;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: clamp(25px, 4vw, 38px);
+    }
+
+    p { color: var(--muted); }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      margin-top: 16px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-weight: 700;
+      background: var(--accent);
+      color: #082016;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: #26334d;
+      color: var(--text);
+      border: 1px solid #3a4967;
+    }
+
+    button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+      gap: 16px;
+    }
+
+    @media (max-width: 700px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .videoWrap {
+      background: #050811;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 220px;
+      object-fit: contain;
+    }
+
+    .status {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 10px 0;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #718096;
+      flex: none;
+    }
+
+    .dot.good { background: var(--accent); }
+    .dot.bad { background: #ff7272; }
+    .dot.warn { background: var(--warn); }
+
+    #detection {
+      font-size: 24px;
+      font-weight: 800;
+      margin: 8px 0;
+    }
+
+    #log {
+      white-space: pre-wrap;
+      font: 13px/1.5 monospace;
+      color: #c5d0e8;
+      max-height: 220px;
+      overflow: auto;
+    }
+
+    .small { font-size: 13px; }
+
+    .tag {
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 3px;
+    }
+  </style>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+</head>
+
+<body>
+<main>
+  <h1>AI Animal Detection</h1>
+  <p>
+    Detect animals using your camera and control an ESP32 LED and buzzer
+    through USB serial.
+  </p>
+
+  <div class="actions">
+    <button id="cameraBtn">1. Start Camera + AI</button>
+    <button id="serialBtn" class="secondary">2. Connect ESP32 USB</button>
+    <button id="stopBtn" class="secondary" disabled>Stop Camera</button>
+  </div>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Camera</h2>
+
+      <div class="videoWrap">
+        <video id="video" autoplay muted playsinline></video>
+      </div>
+
+      <p class="small">
+        Supported animals: bird, cat, dog, horse, sheep, cow,
+        elephant, bear, zebra and giraffe.
+      </p>
+
+      <div id="modelStatus" class="status">
+        <span class="dot"></span>
+        <span>AI model not loaded</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Detection Status</h2>
+
+      <div id="detection">Waiting to start</div>
+      <div id="confidence" class="small">Confidence: —</div>
+
+      <div id="animalStatus" class="status">
+        <span class="dot"></span>
+        <span>No detection yet</span>
+      </div>
+
+      <hr style="border-color:var(--line); margin:18px 0">
+
+      <h2>ESP32 Connection</h2>
+
+      <div id="serialStatus" class="status">
+        <span class="dot"></span>
+        <span>Not connected</span>
+      </div>
+
+      <p class="small">
+        Baud rate: 9600. Sends ANIMAL:1 when an animal is confirmed
+        and ANIMAL:0 when it has not been detected for 3 seconds.
+      </p>
+
+      <span class="tag">USB Serial</span>
+      <span class="tag">TensorFlow.js</span>
+      <span class="tag">ESP32</span>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Activity Log</h2>
+    <div id="log">Ready. Start the camera and connect the ESP32.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Important</h2>
+    <p class="small">
+      Use the latest Chrome or Edge on your computer. Allow camera access.
+      Web Serial requires a supported browser and a secure context such as
+      localhost. Internet access is required to load the AI libraries.
+    </p>
+  </section>
+</main>
+
+<script>
+(() => {
+  const video = document.getElementById('video');
+  const cameraBtn = document.getElementById('cameraBtn');
+  const serialBtn = document.getElementById('serialBtn');
+  const stopBtn = document.getElementById('stopBtn');
+
+  const modelStatus = document.getElementById('modelStatus');
+  const detection = document.getElementById('detection');
+  const confidence = document.getElementById('confidence');
+  const animalStatus = document.getElementById('animalStatus');
+  const serialStatus = document.getElementById('serialStatus');
+  const logEl = document.getElementById('log');
+
+  const ANIMALS = new Set([
+    'bird', 'cat', 'dog', 'horse', 'sheep',
+    'cow', 'elephant', 'bear', 'zebra', 'giraffe'
+  ]);
+
+  const CONFIDENCE_THRESHOLD = 0.55;
+  const POSITIVE_FRAMES_REQUIRED = 2;
+  const RELEASE_DELAY_MS = 3000;
+  const DETECTION_INTERVAL_MS = 180;
+
+  let model = null;
+  let stream = null;
+  let running = false;
+  let busy = false;
+
+  let port = null;
+  let writer = null;
+
+  // Stabilization state
+  let positiveFrames = 0;
+  let lastPositiveAt = 0;
+  let hardwareActive = false;
+  let lastSignal = null;
+  let loopTimer = null;
+
+  function log(message) {
+    const stamp = new Date().toLocaleTimeString();
+    logEl.textContent =
+      `[${stamp}] ${message}\n` + logEl.textContent;
+  }
+
+  function setStatus(element, message, type = '') {
+    element.replaceChildren();
+
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + type;
+
+    const label = document.createElement('span');
+    label.textContent = message;
+
+    element.append(dot, label);
+  }
+
+  async function sendSignal(present, force = false) {
+    if (!writer) {
+      log('ESP32 is not connected; signal not sent.');
+      return;
+    }
+
+    if (!force && lastSignal === present) {
+      return;
+    }
+
+    try {
+      const message = present ? 'ANIMAL:1\n' : 'ANIMAL:0\n';
+
+      await writer.write(new TextEncoder().encode(message));
+      lastSignal = present;
+
+      log('USB → ESP32: ' + message.trim());
+    } catch (error) {
+      log('Serial write failed: ' + error.message);
+
+      setStatus(
+        serialStatus,
+        'Serial write failed — reconnect ESP32',
+        'bad'
+      );
+    }
+  }
+
+  async function connectSerial() {
+    if (!('serial' in navigator)) {
+      alert(
+        'Web Serial is unavailable. Use the latest Chrome or Edge ' +
+        'on a computer and open the page through localhost.'
+      );
+      return;
+    }
+
+    if (port) {
+      log('A serial connection already exists.');
+      return;
+    }
+
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 9600 });
+
+      writer = port.writable.getWriter();
+      lastSignal = null;
+
+      setStatus(serialStatus, 'ESP32 connected at 9600 baud', 'good');
+      serialBtn.textContent = 'ESP32 Connected';
+      serialBtn.disabled = true;
+
+      log('ESP32 USB serial connected.');
+
+      // Send the current hardware state immediately.
+      await sendSignal(hardwareActive, true);
+
+    } catch (error) {
+      port = null;
+      writer = null;
+
+      setStatus(serialStatus, 'Connection failed', 'bad');
+      log('Could not connect ESP32: ' + error.message);
+    }
+  }
+
+  async function startCamera() {
+    if (running) return;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert('Camera access is unavailable. Open this page through localhost.');
+      return;
+    }
+
+    try {
+      setStatus(modelStatus, 'Requesting camera permission…', 'warn');
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment',
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        },
+        audio: false
+      });
+
+      video.srcObject = stream;
+      await video.play();
+
+      setStatus(modelStatus, 'Loading AI model…', 'warn');
+
+      if (!model) {
+        model = await cocoSsd.load();
+      }
+
+      running = true;
+      busy = false;
+      positiveFrames = 0;
+      lastPositiveAt = 0;
+
+      cameraBtn.disabled = true;
+      stopBtn.disabled = false;
+
+      setStatus(modelStatus, 'AI model ready', 'good');
+
+      detection.textContent = 'Scanning…';
+      setStatus(animalStatus, 'Scanning for animals', '');
+
+      log('Camera started and AI model loaded.');
+
+      detectLoop();
+
+    } catch (error) {
+      setStatus(modelStatus, 'Camera/model error', 'bad');
+
+      log('Start failed: ' + error.message);
+
+      alert(
+        'Could not start the camera or AI model. Check camera permission ' +
+        'and your internet connection. ' + error.message
+      );
+
+      stopCamera();
+    }
+  }
+
+  async function detectLoop() {
+    if (!running || busy) return;
+
+    if (video.readyState < 2) {
+      loopTimer = setTimeout(detectLoop, DETECTION_INTERVAL_MS);
+      return;
+    }
+
+    busy = true;
+
+    try {
+      const predictions = await model.detect(video);
+
+      const animals = predictions
+        .filter(prediction =>
+          ANIMALS.has(prediction.class) &&
+          prediction.score >= CONFIDENCE_THRESHOLD
+        )
+        .sort((a, b) => b.score - a.score);
+
+      const found = animals.length > 0;
+      const now = Date.now();
+
+      if (found) {
+        const animal = animals[0];
+
+        detection.textContent =
+          'ANIMAL: ' + animal.class.toUpperCase();
+
+        confidence.textContent =
+          'Confidence: ' + Math.round(animal.score * 100) + '%';
+
+        setStatus(animalStatus, 'Animal detected', 'good');
+
+        positiveFrames++;
+        lastPositiveAt = now;
+
+        // Require consecutive detections before turning hardware on.
+        if (
+          !hardwareActive &&
+          positiveFrames >= POSITIVE_FRAMES_REQUIRED
+        ) {
+          hardwareActive = true;
+
+          await sendSignal(true);
+
+          log('Confirmed detection: LED and buzzer ON.');
+        }
+
+      } else {
+        detection.textContent = 'No animal detected';
+        confidence.textContent = 'Confidence: —';
+
+        setStatus(animalStatus, 'Scanning for animals', '');
+
+        positiveFrames = 0;
+
+        // Do not switch off immediately when one frame misses an animal.
+        if (
+          hardwareActive &&
+          lastPositiveAt > 0 &&
+          now - lastPositiveAt >= RELEASE_DELAY_MS
+        ) {
+          hardwareActive = false;
+
+          await sendSignal(false);
+
+          log('No animal detected for 3 seconds: LED and buzzer OFF.');
+        }
+      }
+
+    } catch (error) {
+      log('Detection error: ' + error.message);
+
+    } finally {
+      busy = false;
+
+      if (running) {
+        loopTimer = setTimeout(detectLoop, DETECTION_INTERVAL_MS);
+      }
+    }
+  }
+
+  function stopCamera() {
+    running = false;
+    positiveFrames = 0;
+    lastPositiveAt = 0;
+
+    if (loopTimer) {
+      clearTimeout(loopTimer);
+      loopTimer = null;
+    }
+
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+
+    video.srcObject = null;
+
+    cameraBtn.disabled = false;
+    stopBtn.disabled = true;
+
+    detection.textContent = 'Camera stopped';
+    confidence.textContent = 'Confidence: —';
+
+    setStatus(modelStatus, 'Camera stopped', '');
+    setStatus(animalStatus, 'Detection stopped', '');
+
+    if (hardwareActive) {
+      hardwareActive = false;
+      sendSignal(false);
+    }
+
+    log('Camera stopped.');
+  }
+
+  cameraBtn.addEventListener('click', startCamera);
+  serialBtn.addEventListener('click', connectSerial);
+  stopBtn.addEventListener('click', stopCamera);
+
+  window.addEventListener('beforeunload', () => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+    }
+  });
+})();
+</script>
+</body>
+</html>
